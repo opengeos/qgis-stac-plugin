@@ -283,7 +283,7 @@ class SettingsDockWidget(QDockWidget):
 
         self.iface.messageBar().pushMessage(
             "STAC Explorer",
-            f"Default catalog set.",
+            "Default catalog set.",
             level=0,
             duration=3,
         )

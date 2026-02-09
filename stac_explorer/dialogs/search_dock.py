@@ -11,11 +11,17 @@ import os
 from urllib.request import urlretrieve
 
 from osgeo import gdal
-
-_logger = logging.getLogger(__name__)
 from qgis.PyQt import sip
-
-from qgis.PyQt.QtCore import Qt, QDate, QThread, QTimer, QSize, QSettings, pyqtSignal
+from qgis.PyQt.QtCore import (
+    Qt,
+    QDate,
+    QThread,
+    QTimer,
+    QSize,
+    QSettings,
+    QVariant,
+    pyqtSignal,
+)
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import (
     QDockWidget,
@@ -59,9 +65,10 @@ from qgis.core import (
     QgsMultiBandColorRenderer,
     QgsStyle,
 )
-from qgis.PyQt.QtCore import QVariant
 
 from ..stac_client import DEFAULT_CATALOGS
+
+_logger = logging.getLogger(__name__)
 
 
 class CollectionFetchWorker(QThread):

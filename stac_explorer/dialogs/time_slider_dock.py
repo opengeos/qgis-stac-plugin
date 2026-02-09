@@ -9,10 +9,8 @@ import logging
 import os
 
 from osgeo import gdal
-
-_logger = logging.getLogger(__name__)
-
 from qgis.PyQt.QtCore import Qt, QTimer, QThread, pyqtSignal
+from qgis.PyQt.QtGui import QFont
 from qgis.PyQt.QtWidgets import (
     QDockWidget,
     QWidget,
@@ -27,7 +25,6 @@ from qgis.PyQt.QtWidgets import (
     QGroupBox,
     QMessageBox,
 )
-from qgis.PyQt.QtGui import QFont
 from qgis.core import (
     QgsRasterLayer,
     QgsProject,
@@ -37,6 +34,8 @@ from qgis.core import (
     QgsMultiBandColorRenderer,
     QgsStyle,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 class TimeSliderLoadWorker(QThread):
