@@ -1,0 +1,28 @@
+[general]
+name=STAC Explorer
+qgisMinimumVersion=3.28
+description=Search, visualize, and download data from multiple STAC catalogs
+version=0.1.0
+author=Qiusheng Wu
+email=giswqs@gmail.com
+
+about=STAC Explorer is a QGIS plugin for searching, visualizing, and downloading
+    data from multiple SpatioTemporal Asset Catalog (STAC) APIs. It supports
+    pre-loaded catalogs (Element84 Earth Search, Microsoft Planetary Computer)
+    and custom user-provided catalog URLs. Features include:
+    - Multi-catalog switching with custom catalog support
+    - Collection browsing and asset key inspection
+    - Spatial, temporal, and cloud cover search filters
+    - Direct COG streaming via /vsicurl/
+    - Time slider for temporal layer navigation with auto-play
+    - Time series plotting with matplotlib
+    - Asset download to local files
+
+tracker=https://github.com/opengeos/qgis-stac-plugin/issues
+repository=https://github.com/opengeos/qgis-stac-plugin
+tags=stac, remote sensing, satellite, raster, cog, sentinel, landsat, download
+homepage=https://github.com/opengeos/qgis-stac-plugin
+category=Raster
+icon=icons/icon.svg
+experimental=False
+deprecated=False
