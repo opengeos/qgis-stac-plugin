@@ -164,25 +164,45 @@ class STACBrowserClient:
                 search_kwargs["filter"] = {
                     "op": "<=",
                     "args": [
-                        {"property": "properties.eo:cloud_cover"},
+                        {"property": "eo:cloud_cover"},
                         max_cloud_cover,
                     ],
                 }
+                search_kwargs["filter_lang"] = "cql2-json"
             except Exception:
-                _logger.debug("CQL2 filter not supported by this catalog")
+                _logger.debug("CQL2 filter not supported, will filter client-side")
 
         if limit:
             search_kwargs["limit"] = limit
             if not unique_dates:
                 search_kwargs["max_items"] = limit
 
-        search_result = client.search(**search_kwargs)
+        try:
+            search_result = client.search(**search_kwargs)
+            items_iter = search_result.items()
+        except Exception:
+            # If CQL2 filter is rejected by the API, fall back to unfiltered search
+            if "filter" in search_kwargs:
+                _logger.debug("CQL2 filter rejected by API, falling back to client-side filtering")
+                search_kwargs.pop("filter")
+                search_kwargs.pop("filter_lang", None)
+                search_result = client.search(**search_kwargs)
+                items_iter = search_result.items()
+            else:
+                raise
 
         # Convert to plain dicts for thread safety.
         result = []
         seen_dates = set()
-        for item in search_result.items():
+        for item in items_iter:
             item = self._sign_item(item)
+
+            # Client-side cloud cover filtering (always applied as a safeguard)
+            if max_cloud_cover is not None:
+                cc = item.properties.get("eo:cloud_cover")
+                if cc is not None and cc > max_cloud_cover:
+                    continue
+
             date_str = item.datetime.strftime("%Y-%m-%d")
 
             if unique_dates:
