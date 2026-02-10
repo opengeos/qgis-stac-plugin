@@ -1368,9 +1368,9 @@ class SearchDockWidget(QDockWidget):
 
             geom_type = geom_dict.get("type", "")
             coords = geom_dict.get("coordinates", [])
-            to_points = lambda ring: [
-                QgsPointXY(float(c[0]), float(c[1])) for c in ring
-            ]  # noqa: E731
+
+            def to_points(ring):
+                return [QgsPointXY(float(c[0]), float(c[1])) for c in ring]
 
             if geom_type == "MultiPolygon":
                 geom = QgsGeometry.fromMultiPolygonXY(
