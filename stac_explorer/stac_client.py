@@ -183,7 +183,9 @@ class STACBrowserClient:
         except Exception:
             # If CQL2 filter is rejected by the API, fall back to unfiltered search
             if "filter" in search_kwargs:
-                _logger.debug("CQL2 filter rejected by API, falling back to client-side filtering")
+                _logger.debug(
+                    "CQL2 filter rejected by API, falling back to client-side filtering"
+                )
                 search_kwargs.pop("filter")
                 search_kwargs.pop("filter_lang", None)
                 search_result = client.search(**search_kwargs)
