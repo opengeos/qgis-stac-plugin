@@ -19,7 +19,6 @@ from qgis.PyQt.QtCore import (
     QTimer,
     QSize,
     QSettings,
-    QVariant,
     pyqtSignal,
 )
 from qgis.PyQt.QtGui import QIcon
@@ -56,7 +55,6 @@ from qgis.core import (
     QgsVectorLayer,
     QgsFeature,
     QgsGeometry,
-    QgsField,
     QgsPointXY,
     QgsFillSymbol,
     QgsRasterShader,
@@ -172,18 +170,21 @@ class LayerLoadWorker(QThread):
     progress = pyqtSignal(int, int, str)  # current, total, layer_name
     finished = pyqtSignal(list)  # list of (cog_url, layer_name, is_valid)
 
-    def __init__(self, layer_specs):
+    def __init__(self, layer_specs, needs_signing=False):
         """Initialize the worker.
 
         Args:
             layer_specs: List of (cog_url, layer_name) tuples.
+            needs_signing: If True, skip AWS_NO_SIGN_REQUEST to preserve SAS tokens.
         """
         super().__init__()
         self.layer_specs = layer_specs
+        self.needs_signing = needs_signing
 
     def run(self):
         """Pre-fetch remote raster metadata for each layer."""
-        gdal.SetConfigOption("AWS_NO_SIGN_REQUEST", "YES")
+        if not self.needs_signing:
+            gdal.SetConfigOption("AWS_NO_SIGN_REQUEST", "YES")
         gdal.SetConfigOption("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
         results = []
         total = len(self.layer_specs)
@@ -1007,10 +1008,11 @@ class SearchDockWidget(QDockWidget):
     # --- GDAL configuration ---
 
     def _prepare_gdal_for_loading(self):
-        """Configure GDAL for public COG loading.
+        """Configure GDAL for COG loading.
 
-        Sets timeouts, cache configuration, and anonymous S3 access
-        required for public catalogs like Element84 Earth Search.
+        Sets timeouts, cache configuration, and anonymous S3 access.
+        Skips AWS_NO_SIGN_REQUEST for catalogs that use signed URLs
+        (e.g. Planetary Computer) to preserve SAS tokens.
         """
         config = {
             "GDAL_HTTP_TIMEOUT": "30",
@@ -1020,8 +1022,16 @@ class SearchDockWidget(QDockWidget):
             "VSI_CACHE": "TRUE",
             "VSI_CACHE_SIZE": "200000000",
             "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
-            "AWS_NO_SIGN_REQUEST": "YES",
         }
+
+        stac = self._get_stac()
+        if not stac.needs_signing():
+            config["AWS_NO_SIGN_REQUEST"] = "YES"
+        else:
+            # Clear any previous setting so GDAL uses the SAS tokens in URLs
+            gdal.SetConfigOption("AWS_NO_SIGN_REQUEST", None)
+            os.environ.pop("AWS_NO_SIGN_REQUEST", None)
+
         for key, value in config.items():
             gdal.SetConfigOption(key, value)
             os.environ[key] = value
@@ -1080,14 +1090,15 @@ class SearchDockWidget(QDockWidget):
 
         self._prepare_gdal_for_loading()
 
-        # Build list of (url, name) to load
+        # Build list of (url, name) to load, re-signing URLs for fresh tokens
+        stac = self._get_stac()
         layer_specs = []
         for idx in data_indices:
             item = self._search_results[idx]
             asset = item["assets"].get(asset_key)
             if asset:
                 layer_name = f"{item['date_str']}_{asset_key}"
-                layer_specs.append((asset["href"], layer_name))
+                layer_specs.append((stac.sign_url(asset["href"]), layer_name))
 
         if not layer_specs:
             QMessageBox.warning(
@@ -1108,7 +1119,7 @@ class SearchDockWidget(QDockWidget):
         self.status_label.setText("Preparing layers...")
 
         # Pre-fetch metadata in background thread
-        worker = LayerLoadWorker(layer_specs)
+        worker = LayerLoadWorker(layer_specs, needs_signing=stac.needs_signing())
         worker.progress.connect(self._on_layer_load_progress)
         worker.finished.connect(self._on_layers_loaded)
         self._start_worker(worker)
@@ -1146,8 +1157,7 @@ class SearchDockWidget(QDockWidget):
         idx = self._add_total - len(self._pending_add)
         self.status_label.setText(f"Adding layer {idx}/{self._add_total} to map...")
 
-        # Ensure GDAL config is set before QgsRasterLayer creation
-        gdal.SetConfigOption("AWS_NO_SIGN_REQUEST", "YES")
+        # Ensure GDAL config is consistent (already set by _prepare_gdal_for_loading)
 
         # Always attempt layer creation even if pre-check failed,
         # as GDAL config may differ between the worker thread and
@@ -1209,9 +1219,23 @@ class SearchDockWidget(QDockWidget):
 
         self._prepare_gdal_for_loading()
 
-        selected_items = [self._search_results[idx] for idx in data_indices]
+        # Re-sign asset URLs for fresh tokens before passing to time slider
+        stac = self._get_stac()
+        selected_items = []
+        for idx in data_indices:
+            item = dict(self._search_results[idx])
+            item["assets"] = {
+                k: dict(v, href=stac.sign_url(v["href"]))
+                for k, v in item["assets"].items()
+            }
+            selected_items.append(item)
         render_settings = self._get_render_settings()
-        self._load_to_time_slider(selected_items, asset_key, render_settings)
+        self._load_to_time_slider(
+            selected_items,
+            asset_key,
+            render_settings,
+            needs_signing=stac.needs_signing(),
+        )
 
     # --- Download ---
 
@@ -1236,7 +1260,8 @@ class SearchDockWidget(QDockWidget):
 
         settings.setValue("STACExplorer/default_download_dir", output_dir)
 
-        # Build download specs
+        # Build download specs, re-signing URLs for fresh tokens
+        stac = self._get_stac()
         download_specs = []
         for idx in data_indices:
             item = self._search_results[idx]
@@ -1245,12 +1270,14 @@ class SearchDockWidget(QDockWidget):
                 # Use date_str + item ID for unique filenames
                 ext = ".tif"
                 href = asset["href"]
-                if "." in href.split("/")[-1]:
-                    ext = "." + href.split("/")[-1].rsplit(".", 1)[-1]
+                # Extract extension from base URL (before query params)
+                base_path = href.split("?")[0]
+                if "." in base_path.split("/")[-1]:
+                    ext = "." + base_path.split("/")[-1].rsplit(".", 1)[-1]
                 filename = f"{item['date_str']}_{item['id']}_{asset_key}{ext}"
                 # Sanitize filename
                 filename = filename.replace("/", "_").replace("\\", "_")
-                download_specs.append((href, filename))
+                download_specs.append((stac.sign_url(href), filename))
 
         if not download_specs:
             QMessageBox.warning(
@@ -1266,8 +1293,7 @@ class SearchDockWidget(QDockWidget):
         self.load_all_btn.setEnabled(False)
         self.search_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, len(download_specs))
-        self.progress_bar.setValue(0)
+        self.progress_bar.setRange(0, 0)  # indeterminate animated bar
         self.status_label.setVisible(True)
         self.status_label.setText("Downloading...")
 
@@ -1284,7 +1310,6 @@ class SearchDockWidget(QDockWidget):
             total: Total number of items.
             filename: Name of the file being downloaded.
         """
-        self.progress_bar.setValue(current)
         self.status_label.setText(f"Downloading {filename} ({current}/{total})...")
 
     def _on_download_finished(self, downloaded, failed):
@@ -1326,17 +1351,14 @@ class SearchDockWidget(QDockWidget):
         """
         self._remove_footprint_layer()
 
-        layer = QgsVectorLayer("Polygon?crs=EPSG:4326", "Search Footprints", "memory")
-        dp = layer.dataProvider()
-        dp.addAttributes(
-            [
-                QgsField("data_index", QVariant.Int),
-                QgsField("date", QVariant.String),
-                QgsField("item_id", QVariant.String),
-                QgsField("cloud_cover", QVariant.Double),
-            ]
+        uri = (
+            "Polygon?crs=EPSG:4326"
+            "&field=data_index:integer"
+            "&field=date:string"
+            "&field=item_id:string"
+            "&field=cloud_cover:double"
         )
-        layer.updateFields()
+        layer = QgsVectorLayer(uri, "Search Footprints", "memory")
 
         features = []
         for i, item in enumerate(items):
@@ -1344,12 +1366,20 @@ class SearchDockWidget(QDockWidget):
             if not geom_dict:
                 continue
 
-            geom = QgsGeometry.fromPolygonXY(
-                [
-                    [QgsPointXY(c[0], c[1]) for c in ring]
-                    for ring in geom_dict.get("coordinates", [])
-                ]
-            )
+            geom_type = geom_dict.get("type", "")
+            coords = geom_dict.get("coordinates", [])
+            to_points = lambda ring: [
+                QgsPointXY(float(c[0]), float(c[1])) for c in ring
+            ]  # noqa: E731
+
+            if geom_type == "MultiPolygon":
+                geom = QgsGeometry.fromMultiPolygonXY(
+                    [[to_points(ring) for ring in poly] for poly in coords]
+                )
+            elif geom_type == "Polygon":
+                geom = QgsGeometry.fromPolygonXY([to_points(ring) for ring in coords])
+            else:
+                continue
 
             feat = QgsFeature(layer.fields())
             feat.setGeometry(geom)
@@ -1362,7 +1392,7 @@ class SearchDockWidget(QDockWidget):
             )
             features.append(feat)
 
-        dp.addFeatures(features)
+        layer.dataProvider().addFeatures(features)
         layer.updateExtents()
 
         # Style: semi-transparent blue outline

@@ -44,18 +44,21 @@ class TimeSliderLoadWorker(QThread):
     progress = pyqtSignal(int, int, str)  # current, total, layer_name
     finished = pyqtSignal(list)  # list of (cog_url, layer_name, item_dict, valid)
 
-    def __init__(self, layer_specs):
+    def __init__(self, layer_specs, needs_signing=False):
         """Initialize the worker.
 
         Args:
             layer_specs: List of (cog_url, layer_name, item_dict) tuples.
+            needs_signing: If True, skip AWS_NO_SIGN_REQUEST to preserve SAS tokens.
         """
         super().__init__()
         self.layer_specs = layer_specs
+        self.needs_signing = needs_signing
 
     def run(self):
         """Pre-fetch remote raster metadata for each layer."""
-        gdal.SetConfigOption("AWS_NO_SIGN_REQUEST", "YES")
+        if not self.needs_signing:
+            gdal.SetConfigOption("AWS_NO_SIGN_REQUEST", "YES")
         gdal.SetConfigOption("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
         results = []
         total = len(self.layer_specs)
@@ -228,11 +231,15 @@ class TimeSliderDockWidget(QDockWidget):
 
         self.setWidget(container)
 
-    def _prepare_gdal_for_loading(self):
-        """Configure GDAL for public COG loading.
+    def _prepare_gdal_for_loading(self, needs_signing=False):
+        """Configure GDAL for COG loading.
 
-        Sets timeouts, cache configuration, and anonymous S3 access
-        required for public catalogs like Element84 Earth Search.
+        Sets timeouts, cache configuration, and anonymous S3 access.
+        Skips AWS_NO_SIGN_REQUEST for catalogs that use signed URLs
+        (e.g. Planetary Computer) to preserve SAS tokens.
+
+        Args:
+            needs_signing: If True, skip AWS_NO_SIGN_REQUEST.
         """
         config = {
             "GDAL_HTTP_TIMEOUT": "30",
@@ -242,13 +249,19 @@ class TimeSliderDockWidget(QDockWidget):
             "VSI_CACHE": "TRUE",
             "VSI_CACHE_SIZE": "200000000",
             "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
-            "AWS_NO_SIGN_REQUEST": "YES",
         }
+
+        if not needs_signing:
+            config["AWS_NO_SIGN_REQUEST"] = "YES"
+        else:
+            gdal.SetConfigOption("AWS_NO_SIGN_REQUEST", None)
+            os.environ.pop("AWS_NO_SIGN_REQUEST", None)
+
         for key, value in config.items():
             gdal.SetConfigOption(key, value)
             os.environ[key] = value
 
-    def load_items(self, items, asset_key, render_settings=None):
+    def load_items(self, items, asset_key, render_settings=None, needs_signing=False):
         """Load STAC items as raster layers into a layer group.
 
         Pre-fetches metadata in a background thread, then creates layers
@@ -258,6 +271,7 @@ class TimeSliderDockWidget(QDockWidget):
             items: List of item dicts from STACBrowserClient.search().
             asset_key: Asset key to use for COG URLs (e.g., "visual").
             render_settings: Optional dict with render mode and parameters.
+            needs_signing: If True, preserve SAS tokens in URLs.
         """
         self.clear()
 
@@ -265,7 +279,8 @@ class TimeSliderDockWidget(QDockWidget):
             QMessageBox.warning(self, "STAC Explorer", "No items to load.")
             return
 
-        self._prepare_gdal_for_loading()
+        self._needs_signing = needs_signing
+        self._prepare_gdal_for_loading(needs_signing=needs_signing)
 
         # Build list of (url, name, item_dict) to load
         layer_specs = []
@@ -294,7 +309,7 @@ class TimeSliderDockWidget(QDockWidget):
         self.date_label.setText("Loading...")
 
         # Pre-fetch in background thread
-        worker = TimeSliderLoadWorker(layer_specs)
+        worker = TimeSliderLoadWorker(layer_specs, needs_signing=needs_signing)
         worker.progress.connect(self._on_load_progress)
         worker.finished.connect(self._on_load_finished)
         self._start_worker(worker)
@@ -334,8 +349,7 @@ class TimeSliderDockWidget(QDockWidget):
         idx = self._add_total - len(self._pending_add)
         self.status_label.setText(f"Adding layer {idx}/{self._add_total} to map...")
 
-        # Ensure GDAL config is set before QgsRasterLayer creation
-        gdal.SetConfigOption("AWS_NO_SIGN_REQUEST", "YES")
+        # Ensure GDAL config is consistent (already set by _prepare_gdal_for_loading)
 
         # Always attempt layer creation even if pre-check failed
         uri = f"/vsicurl/{cog_url}"

@@ -85,6 +85,14 @@ class STACBrowserClient:
         """
         return _PC_HOST in self._stac_url
 
+    def needs_signing(self):
+        """Check if the current catalog requires asset URL signing.
+
+        Returns:
+            True if the catalog uses signed URLs (e.g. Planetary Computer).
+        """
+        return HAS_PC and self._is_pc_catalog()
+
     def _sign_item(self, item):
         """Sign a STAC item if using Planetary Computer and package is available.
 
@@ -100,6 +108,26 @@ class STACBrowserClient:
             except Exception as e:
                 _logger.debug("Failed to sign item %s: %s", item.id, e)
         return item
+
+    def sign_url(self, url):
+        """Sign a single asset URL if using Planetary Computer.
+
+        Use this to get a fresh SAS token just before loading a layer,
+        since tokens from search time may have expired.
+
+        Args:
+            url: The asset URL to sign.
+
+        Returns:
+            Signed URL with fresh SAS token, or original URL if signing
+            is not needed or not available.
+        """
+        if HAS_PC and self._is_pc_catalog():
+            try:
+                return pc.sign_url(url)
+            except Exception as e:
+                _logger.warning("Failed to sign URL: %s", e)
+        return url
 
     def get_collections(self):
         """List all available collections from the current catalog.
